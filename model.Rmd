@@ -1,0 +1,300 @@
+---
+title: "m1"
+output: html_document
+---
+
+```{r setup, results="hide"}
+knitr::opts_chunk$set(
+  echo = TRUE, 
+  dev = "png",
+  dpi = 150,
+  fig.align = "center",
+  comment = NA
+)
+
+library(tidyverse)
+library(rstan)
+library(coda)
+library(shinystan)
+library(ggplot2)
+library(bayesplot)
+
+rstan_options(auto_write = TRUE)
+options(mc.cores = parallel::detectCores())
+```
+
+
+# Model
+$$
+\begin{align*}
+\textrm{y} & \sim \textrm{Student-t}(\nu, \mu_{i}, \sigma) \\
+\mu_{i} &= \alpha + \beta_{i} \times X \\
+\nu & \sim \textrm{Gamma}(2, 1) \\
+\sigma & \sim \textrm{Cauchy}(0, 2)  \\
+\alpha & \sim \textrm{Normal}(10, 50) \\
+\beta_{i} & \sim \textrm{Normal}(\beta_{\mu,i}, 20) \\
+\beta_{\mu,i} & \sim \textrm{Normal}(0, 30) \\
+\end{align*}
+$$
+
+
+```{r}
+stan_model_code <- "
+  // Data block
+  data {                      
+    int<lower=1> N;               // Data size
+    int<lower=1> K;               // Number of IndividualPredictors
+    matrix[N, K] X;     	        // Predictor variable X by IndividualPredictor a.k.a. `predicted`
+    vector<lower=0>[N] Y;         // Target variable Y a.k.a.`actual`
+    row_vector[K] x_hat;          // New data from K * IndividualPredictor pipelines
+  }
+  
+  // Parameters block
+  parameters {                
+    real<lower=0> alpha;			      // Intercept
+    vector[K] beta;                 // IndividualPredictor Coefficients
+    vector[K] beta_mu;              // IndividualPredictor Coefficients' mu
+    real<lower=0> sigma;            // error 
+    real<lower=0> nu;               // Student t degrees of freedom
+  }
+  
+  // Transformed Paramaters block
+  transformed parameters {          
+    vector[N] mu;
+    mu = alpha + X * beta;    // linear predictor
+  } 
+  
+  // Model block
+  model {                     
+    // hyper priors
+    beta_mu ~ normal(0, 30);
+
+    // priors
+    alpha ~ normal(10, 50);
+    beta ~ normal(beta_mu, 20);
+    sigma ~ cauchy(0, 2);    
+    nu ~ gamma(2, 1);
+    
+    // likelihood
+    Y ~ student_t(nu, mu, sigma);
+  }
+  
+  // Generated quantities block
+  generated quantities {      
+    vector[N] y_rep;        // simulate data from the posterior
+    vector[N] log_lik;      // log-likelihood posterior
+    real y_hat;             // Forward prediction from new x_hat data
+    
+    for (n in 1:N) {
+      y_rep[n] = student_t_rng(nu, mu[n], sigma);
+    }
+    for (n in 1:N) {
+      log_lik[n] = student_t_lpdf(Y[n] | nu, mu[n], sigma);
+    }
+    y_hat = student_t_rng(nu, alpha + x_hat * beta, sigma); 
+  }
+
+" 
+
+sm  <- stan_model(model_code = stan_model_code)
+```
+
+# Data
+
+## Raw
+```{r}
+raw_data <- readRDS('data.RDS')
+str(raw_data)
+```
+
+## Prep
+
+```{r}
+x_obs <- raw_data %>% 
+  select(-y, x2, x3) %>% 
+  mutate_all(list(~scale(.) %>% as.vector))   # Standardise X
+y_obs <- raw_data %>% select(y)
+
+N <- nrow(x_obs)
+K <- ncol(x_obs)
+
+x_hat <- rep(0, K)  # This will contain your individual predictor point estimates when you are making a forward prediction, for now just set to 0
+
+data <- list(N=N, K=K, X=x_obs, Y=y_obs$y, x_hat=x_hat)
+str(data)
+
+```
+
+# Stan Fit
+```{r}
+
+sf1 <- sampling(sm, 
+                data = data, 
+                iter = 2000, 
+                warmup = 500)
+```
+
+```{r}
+print(sf1, digits=3, prob=c(0.5, 0.67, 0.8, 0.9))
+```
+
+## Params
+```{r}
+beta_params1 = str_c(lapply(1:K, function (i) str_interp("beta[${i}]")))
+beta_mu_params1 = str_c(lapply(1:K, function (i) str_interp("beta_mu[${i}]")))
+
+params1 = c('alpha', beta_params1, beta_mu_params1, 'sigma', 'nu')
+```
+
+
+# Diagnostics
+
+```{r}
+summary(sf1)
+```
+
+```{r}
+print(sf1, digits=3, prob=c(0.5, 0.67, 0.8, 0.9))
+```
+
+```{r}
+check_treedepth(sf1)
+check_energy(sf1)
+check_divergences(sf1)
+```
+
+```{r}
+rhats1 <- rhat(sf1)
+mcmc_rhat_data(rhat = rhats1)
+```
+
+```{r}
+neff_ratios1 <- neff_ratio(sf1)
+mcmc_neff_data(neff_ratios1)
+```
+
+
+## Trace
+
+```{r}
+stan_trace(sf1, pars=params1)
+```
+
+
+# Parameters
+
+```{r}
+mcmc_hist(as.array(sf1), pars = params1)
+
+```
+
+```{r}
+mcmc_dens_overlay(as.array(sf1), pars = params1)
+```
+
+
+
+## alpha
+```{r}
+mcmc_areas(as.array(sf1),
+           prob = 0.67, prob_outer = 0.9,
+           point_est = 'mean',
+           pars = c("alpha"))
+```
+
+## beta
+```{r}
+mcmc_areas(as.array(sf1),
+           prob = 0.67, prob_outer = 0.9,
+           point_est = 'mean',
+           pars = beta_params1)
+
+mcmc_areas(as.array(sf1),
+           prob = 0.67, prob_outer = 0.9,
+           point_est = 'mean',
+           pars = beta_mu_params1)
+```
+
+## sigma
+```{r}
+mcmc_areas(as.array(sf1),
+           prob = 0.67, prob_outer = 0.9,
+           point_est = 'mean',
+           pars = c("sigma"))
+```
+
+## nu
+```{r}
+mcmc_areas(as.array(sf1),
+           prob = 0.67, prob_outer = 0.9,
+           point_est = 'mean',
+           pars = c("nu"))
+
+```
+
+
+# Extract
+```{r}
+theta1 <- rstan::extract(sf1)
+y_rep1 <- theta1$y_rep
+y_hat1 <- theta1$y_hat
+```
+
+
+# Posterior Predictive Plots
+
+## Min
+```{r}
+ppc_stat(y_obs$y, y_rep1, stat='min', binwidth = 0.05) + coord_cartesian(xlim = c(3, 8))
+```
+
+## Max
+```{r}
+ppc_stat(y_obs$y, y_rep1, stat='max', binwidth = 0.05) + coord_cartesian(xlim = c(20, 25))
+```
+
+## Mean
+```{r}
+ppc_stat(y_obs$y, y_rep1, stat='mean', binwidth = 0.005)
+```
+
+## Median
+```{r}
+ppc_stat(y_obs$y, y_rep1, stat='median', binwidth = 0.005)
+```
+
+## Scatter
+```{r}
+ppc_scatter_avg(y_obs$y, y_rep1)
+```
+
+## Density of random sample from posterior
+```{r}
+ids <- sample(nrow(y_rep1), size = 200)
+ppc_dens_overlay(y_obs$y, y_rep1[ids, ]) + coord_cartesian(xlim = c(5, 25))
+```
+
+
+# HPDs
+```{r}
+hpd67_1 <- HPDinterval(as.mcmc(y_rep1), prob = 0.67)
+print("Mean 67% HPD width:")
+mean(hpd67_1[, 'upper']) - mean(hpd67_1[, 'lower'])
+```
+
+```{r}
+hpd80_1 <- HPDinterval(as.mcmc(y_rep1), prob = 0.8)
+print("Mean 80% HPD width:")
+mean(hpd80_1[, 'upper']) - mean(hpd80_1[, 'lower'])
+```
+
+```{r}
+hpd90_1 <- HPDinterval(as.mcmc(y_rep1), prob = 0.9)
+print("Mean 90% HPD width:")
+mean(hpd90_1[, 'upper']) - mean(hpd90_1[, 'lower'])
+```
+
+# ShinyStan
+```{r}
+#launch_shinystan(sf1)
+```
