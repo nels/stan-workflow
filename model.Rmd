@@ -28,12 +28,12 @@ options(mc.cores = parallel::detectCores())
 $$
 \begin{align*}
 \textrm{y} & \sim \textrm{Student-t}(\nu, \mu_{i}, \sigma) \\
-\mu_{i} &= \alpha + \beta_{i} \times X \\
+\mu_{i} &= \alpha + \beta_{i} \times \textbf{X} \\
 \nu & \sim \textrm{Gamma}(2, 1) \\
 \sigma & \sim \textrm{Cauchy}(0, 2)  \\
 \alpha & \sim \textrm{Normal}(10, 50) \\
-\beta_{i} & \sim \textrm{Normal}(\beta_{\mu,i}, 20) \\
-\beta_{\mu,i} & \sim \textrm{Normal}(0, 30) \\
+\beta_{i} & \sim \textrm{Normal}(\mu_{\beta_i}, 20) \\
+\mu_{\beta_i} & \sim \textrm{Normal}(0, 30) \\
 \end{align*}
 $$
 
