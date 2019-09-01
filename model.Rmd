@@ -1,6 +1,9 @@
 ---
 title: "m1"
-output: html_document
+output: 
+  html_document:
+    toc: true
+    toc_depth: 2
 ---
 
 ```{r setup, results="hide"}
@@ -13,11 +16,14 @@ knitr::opts_chunk$set(
 )
 
 library(tidyverse)
+library(hBayesDM)
 library(rstan)
 library(coda)
 library(shinystan)
 library(ggplot2)
 library(bayesplot)
+library(rethinking)
+
 
 rstan_options(auto_write = TRUE)
 options(mc.cores = parallel::detectCores())
@@ -44,8 +50,8 @@ stan_model_code <- "
   data {                      
     int<lower=1> N;               // Data size
     int<lower=1> K;               // Number of IndividualPredictors
-    matrix[N, K] X;     	        // Predictor variable X by IndividualPredictor a.k.a. `predicted`
-    vector<lower=0>[N] Y;         // Target variable Y a.k.a.`actual`
+    matrix[N, K] X;     	        // Matrix of IndividualPredictor point prediction values
+    vector<lower=0>[N] Y;         // Target variable Y 
     row_vector[K] x_hat;          // New data from K * IndividualPredictor pipelines
   }
   
@@ -111,7 +117,7 @@ str(raw_data)
 
 ```{r}
 x_obs <- raw_data %>% 
-  select(-y, x2, x3) %>% 
+  select(-y) %>% 
   mutate_all(list(~scale(.) %>% as.vector))   # Standardise X
 y_obs <- raw_data %>% select(y)
 
@@ -127,7 +133,6 @@ str(data)
 
 # Stan Fit
 ```{r}
-
 sf1 <- sampling(sm, 
                 data = data, 
                 iter = 2000, 
@@ -191,7 +196,6 @@ mcmc_hist(as.array(sf1), pars = params1)
 ```{r}
 mcmc_dens_overlay(as.array(sf1), pars = params1)
 ```
-
 
 
 ## alpha
@@ -297,4 +301,78 @@ mean(hpd90_1[, 'upper']) - mean(hpd90_1[, 'lower'])
 # ShinyStan
 ```{r}
 #launch_shinystan(sf1)
+```
+
+# Forward prediction
+
+## New Data
+```{r}
+x_hat <- runif(3, min = 10, max = 15) # This will come from your ML predictors, just taking random numbers here
+str(x_hat)
+data <- list(N=N, K=K, X=x_obs, Y=y_obs$y, x_hat=scale(x_hat)[,1])
+str(data)
+```
+
+## Refit
+```{r}
+sf1_fwd <- sampling(sm, 
+                    data = data, 
+                    iter = 2000, 
+                    warmup = 500)
+```
+
+## Diagnostics
+```{r}
+check_treedepth(sf1_fwd)
+check_energy(sf1_fwd)
+check_divergences(sf1_fwd)
+```
+
+```{r}
+stan_trace(sf1_fwd, pars=params1)
+```
+
+## ShinyStan
+```{r}
+#launch_shinystan(sf1_fwd)
+```
+
+## Predictive Posterior
+```{r}
+theta <- rstan::extract(sf1_fwd)
+y_hat <- theta$y_hat
+str(y_hat)
+```
+
+**y_hat** now contains 6000 draws for the prediction from the new, previously unseen, data
+
+### Plot
+```{r}
+mcmc_intervals(as.array(sf1_fwd), pars = 'y_hat', prob = 0.67, prob_outer = 0.9)
+```
+
+```{r}
+mcmc_areas(as.array(sf1_fwd), pars = 'y_hat', prob = 0.67, prob_outer = 0.9)
+```
+
+### Analyse
+Analyse y_hat as per requirements.
+Here an example of calculating the widths of specific highest probability density intervals:
+
+```{r}
+hpd67 <- HDIofMCMC(y_hat, credMass = 0.67)
+print("67% HPD width:")
+hpd67[2] - hpd67[1]
+```
+
+```{r}
+hpd80 <- HDIofMCMC(y_hat, credMass = 0.80)
+print("80% HPD width:")
+hpd80[2] - hpd80[1]
+```
+
+```{r}
+hpd90 <- HDIofMCMC(y_hat, credMass = 0.90)
+print("90% HPD width:")
+hpd90[2] - hpd90[1]
 ```
